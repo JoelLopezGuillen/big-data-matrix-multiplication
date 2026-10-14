@@ -5,3 +5,6 @@ data/*.bin
 results/verify/
 results/smoke/
 .pytest_cache/
+
+# Intermediate HTML for the report PDF
+report/report.html

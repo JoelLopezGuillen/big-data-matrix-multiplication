@@ -1,8 +1,8 @@
 # How Matrix Size Affects the Runtime and Memory of Naive Matrix Multiplication in Python, Java and C
 
-**Author:** Joel López Guillén <!-- REVIEW: check exact name -->
-**Assignment:** 1 — Basic Matrix Multiplication in Different Languages
-**Course:** BIG DATA, Grado en Ciencia e Ingeniería de Datos, Universidad de Las Palmas de Gran Canaria, 2026-2027
+**Author:** Joel López Guillén <!-- REVIEW: check exact name -->  
+**Assignment:** 1 — Basic Matrix Multiplication in Different Languages  
+**Course:** BIG DATA, Grado en Ciencia e Ingeniería de Datos, Universidad de Las Palmas de Gran Canaria, 2026-2027  
 **Repository:** https://github.com/JoelLopezGuillen/big-data-matrix-multiplication (folder `assignment-1/`, tag `assignment-1`)
 
 ---
