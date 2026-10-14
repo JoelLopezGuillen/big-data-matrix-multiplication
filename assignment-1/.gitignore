@@ -1,0 +1,7 @@
+# Generated input matrices (reproducible via data/generate.py)
+data/*.bin
+
+# Cross-check products and smoke-test output
+results/verify/
+results/smoke/
+.pytest_cache/

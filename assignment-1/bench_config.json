@@ -1,0 +1,13 @@
+{
+  "sizes": [64, 128, 256, 512, 1024, 2048, 4096],
+  "languages": ["c", "java", "python"],
+  "repetitions": 5,
+  "warmups": {"c": 1, "java": 5, "python": 1},
+  "timeout_seconds": 900,
+  "numeric_type": "float64",
+  "gcc_flags": ["-O2", "-std=c11", "-Wall", "-Wextra"],
+  "javac_flags": ["--release", "21"],
+  "java_flags": ["-Xms4g", "-Xmx4g", "-XX:+UseSerialGC"],
+  "pin_to_performance_cores": true,
+  "priority_class": "high"
+}
