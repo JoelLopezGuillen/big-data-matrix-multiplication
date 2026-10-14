@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Java
+*.class
+target/
+build/
+out/
+
+# C
+*.o
+*.exe
+*.out
+a.out
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
