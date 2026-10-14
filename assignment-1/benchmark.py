@@ -81,6 +81,7 @@ def rows_for_run(language, n, config, run):
         "warmups": config["warmups"][language],
         "timestamp": now(),
     }
+    setup_note = "; ".join(run.get("setup_warnings", []))
     if run["status"] == "ok":
         result = run["result"]
         return [
@@ -91,7 +92,7 @@ def rows_for_run(language, n, config, run):
                 "checksum": repr(float(checksum)),
                 "peak_wset_bytes": run["peak_wset_bytes"],
                 "status": "ok",
-                "note": "",
+                "note": setup_note,
             }
             for index, (time_ns, checksum) in enumerate(
                 zip(result["times_ns"], result["checksums"])
@@ -104,6 +105,8 @@ def rows_for_run(language, n, config, run):
     else:
         last = run["stderr"].strip().splitlines()[-1:] or [""]
         note = f"returncode={run['returncode']} {last[0]}".strip()
+    if setup_note:
+        note = f"{note}; {setup_note}"
     return [{**base, "repetition": "", "time_ns": "", "checksum": "",
              "peak_wset_bytes": "", "status": run["status"], "note": note}]
 

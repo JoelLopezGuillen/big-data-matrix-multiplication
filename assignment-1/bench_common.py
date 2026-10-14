@@ -175,13 +175,18 @@ def run_benchmark_child(cmd, timeout_s, affinity=None, priority=None):
         text=True,
         bufsize=1,
     )
-    try:
-        if affinity:
+    # Setup failures are reported in the CSV note instead of being silently ignored.
+    setup_warnings = []
+    if affinity:
+        try:
             proc.cpu_affinity(affinity)
-        if priority and PRIORITY_CLASSES.get(priority) is not None:
+        except (psutil.Error, ValueError, OSError) as exc:
+            setup_warnings.append(f"affinity not applied ({type(exc).__name__})")
+    if priority and PRIORITY_CLASSES.get(priority) is not None:
+        try:
             proc.nice(PRIORITY_CLASSES[priority])
-    except psutil.Error:
-        pass
+        except (psutil.Error, ValueError, OSError) as exc:
+            setup_warnings.append(f"priority not applied ({type(exc).__name__})")
 
     lines = queue.Queue()
     stderr_lines = queue.Queue()
@@ -247,4 +252,5 @@ def run_benchmark_child(cmd, timeout_s, affinity=None, priority=None):
         "peak_wset_bytes": peak,
         "returncode": proc.returncode,
         "stderr": stderr_joined,
+        "setup_warnings": setup_warnings,
     }
