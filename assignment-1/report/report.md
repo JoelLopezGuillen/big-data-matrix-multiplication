@@ -14,7 +14,7 @@ triple-loop dense matrix multiplication implemented in C, Java and Python on a s
 (Intel Core i7-12650H, Windows 11). All implementations read identical float64 input matrices, were
 validated against NumPy, and were timed over five repetitions after warm-up runs, reporting the median
 and interquartile range. Runtime did not follow a single cubic curve: the time per inner-loop iteration
-stayed roughly constant while the strided operand fitted in one cache level and rose sharply each time it
+stayed roughly constant while matrix B, which is read column by column, fitted in one cache level and rose sharply each time it
 exceeded one (in C: 0.27, 0.5, 2.0 and 13.3 ns per iteration). C and Java performed similarly from n = 256
 to 512, while CPython was 36–112 times slower than C at the sizes where both completed. The largest feasible sizes within a
 900 s per-process budget were 2048 for C and 1024 for Java and Python; a supplementary run showed that
@@ -41,29 +41,15 @@ triple-loop dense matrix multiplication implemented in Python, Java and C, on on
 
 ## 2. Background
 
-**Naive matrix multiplication.** For C = A·B with n × n matrices, each element C[i][j] is the dot product
-of row *i* of A and column *j* of B. The classic i-j-k triple loop performs n³ multiply-add operations,
-so doubling n multiplies the arithmetic work by 2³ = 8.
+**Naive matrix multiplication.** To multiply two n × n matrices A and B, each element C[i][j] of the result is obtained by multiplying row i of A by column j of B, element by element, and adding the products. Using three nested loops (i, j and k), this requires n³ multiplications and additions. Therefore, when n doubles, the amount of work grows by 2³ = 8.
 
-**Row-major storage and access pattern.** In row-major order, consecutive elements of a row are adjacent
-in memory, and element (i, k) of a flat array is at index i·n + k. In the i-j-k order the inner loop reads
-A[i][k] contiguously but reads B[k][j] with a stride of n elements (8n bytes), touching a different cache
-line on every iteration.
+**How matrices are stored.** In memory, a matrix is stored row by row: all the elements of row 0, then those of row 1, and so on. This means that reading a row of A is fast, because its elements are next to each other. Reading a column of B is slower, because each element is n positions away from the previous one.
 
-**Memory hierarchy.** Processors move data between memory levels in cache lines (64 bytes on x86).
-Each level is larger and slower than the previous one: L1, L2, L3 and main memory [3], [4]. When the data a
-loop reuses no longer fits in a level, accesses are served by the next, slower level. On the test machine
-each performance core has a 48 KB L1 data cache and a 1.25 MB L2 cache, and the 24 MB L3 cache is
-shared [2], [12].
+**Memory hierarchy.** The processor does not read data directly from main memory every time, because that would be too slow. It keeps recently used data in small, fast memories called caches (L1, L2 and L3), each one bigger but slower than the previous one [3], [4]. Data is moved between these levels in blocks of 64 bytes called cache lines. When reading a row, one cache line brings eight consecutive values; when reading a column of B, almost every access needs a different cache line. While the data fits in a cache, access is fast. When it no longer fits, the processor has to fetch it from the next, slower level. On the test machine, each performance core has a 48 KiB L1 data cache and a 1.25 MiB L2 cache, and all cores share a 24 MiB L3 cache [2], [12].
 
-**Execution models.** C is compiled ahead of time by gcc to native code. Java is compiled to bytecode that
-the HotSpot JVM first interprets and then compiles just-in-time to optimised native code for frequently
-executed ("hot") methods [5]; measurements taken before this happens are not representative, which is why
-warm-up runs are needed [10]. CPython interprets bytecode and represents every number as a heap-allocated
-object, so each arithmetic operation involves type checks and object management.
+**How each language runs the code.** C is translated into machine code before it runs. Java is compiled to bytecode, which the JVM first interprets and then, while running, its JIT compiler turns the most frequently used code into optimised machine code [5]. This is why Java needs some warm-up runs before measuring [10]. Python (CPython) also compiles the code to bytecode, but executes it one instruction at a time with an interpreter and treats every number as an object, which adds extra work to each operation.
 
-**Benchmarking pitfalls.** Measurements must use a monotonic clock, exclude warm-up runs, and consume the
-result so that the compiler cannot remove the computation as dead code [1], [10].
+**Measuring correctly.** A reliable benchmark must use a monotonic timer (one that never goes backwards), discard the warm-up runs, and use the result of the computation; otherwise the compiler could skip the computation entirely because its result is never used [1], [10].
 
 ## 3. Methodology
 
@@ -87,12 +73,13 @@ any implementation.
 To compare the three languages fairly, all of them must multiply exactly the same matrices. Each programming language has its own random number generator, so generating the matrices separately in C, Java and Python would produce different inputs. Instead, the input matrices A and B were generated once for each size by a Python script (`data/generate.py`) and saved to files that all three implementations read [1].
 
 The values are random numbers between -1 and 1 (uniform distribution over [-1, 1)), stored as 64-bit floating-point numbers (float64). They were generated with NumPy’s `default_rng` generator using fixed seeds (42 for A and 43 for B), so running the script again produces exactly the same matrices. The files store the raw binary values row by row (little-endian, row-major order), which avoids any loss of precision from converting numbers to text.
+
 ### 3.3 Environment
 
 | Item | Value |
 |---|---|
 | CPU | Intel Core i7-12650H: 6 performance cores (P-cores, Hyper-Threading) and 4 efficiency cores (E-cores); 10 physical cores, 16 logical processors |
-| Caches (P-core) | L1d 48 KB and L2 1.25 MB per core; L3 24 MB shared; 64-byte lines (reported by Windows [12]) |
+| Caches (P-core) | L1d 48 KiB and L2 1.25 MiB per core; L3 24 MiB shared; 64-byte lines (reported by Windows [12]) |
 | RAM | 15.7 GiB |
 | OS | Windows 11 (build 10.0.26200) |
 | C | gcc 16.1.0 (MSYS2 UCRT64), flags `-O2 -std=c11 -Wall -Wextra` |
@@ -136,7 +123,7 @@ The declared size sequence was n = 64, 128, 256, 512, 1024, 2048 and 4096. Each 
 900 s, covering warm-ups and the five repetitions. A configuration that exceeded the budget was killed and
 recorded as a timeout with its limit, and larger sizes for that language were skipped, since doubling n
 multiplies the work by eight. Memory was not a limiting factor: three float64 matrices at n = 4096 need
-about 400 MB.
+about 384 MiB.
 
 ## 4. Results
 
@@ -173,16 +160,16 @@ attempted was 4096 for C and 2048 for Java and Python.
 | 2048 | 52.4 | — | — |
 
 **Table 3.** Time per inner-loop iteration, T/n³ (nanoseconds). A purely cubic cost gives a constant value.
-The last column gives the size of B (8n² bytes), the operand read with stride n.
+The last column gives the size of B (8n² bytes), the matrix read column by column.
 
 | n | C | Java | Python | Size of B |
 |---|---|---|---|---|
-| 64 | 0.27 | 1.71 | 29.8 | 32 KB |
-| 128 | 0.53 | 0.72 | 29.2 | 128 KB |
-| 256 | 0.50 | 0.56 | 32.5 | 512 KB |
-| 512 | 2.01 | 2.06 | 71.6 | 2 MB |
-| 1024 | 2.03 | 3.52 | 105.8 | 8 MB |
-| 2048 | 13.33 | — | — | 32 MB |
+| 64 | 0.27 | 1.71 | 29.8 | 32 KiB |
+| 128 | 0.53 | 0.72 | 29.2 | 128 KiB |
+| 256 | 0.50 | 0.56 | 32.5 | 512 KiB |
+| 512 | 2.01 | 2.06 | 71.6 | 2 MiB |
+| 1024 | 2.03 | 3.52 | 105.8 | 8 MiB |
+| 2048 | 13.33 | — | — | 32 MiB |
 
 Variability was low: the IQR was below 2.5 % of the median for every C configuration up to n = 1024,
 and at most 6.4 % for Java. It increased for long runs: 4.8 % for C at n = 2048 and about 10 % for
@@ -234,73 +221,37 @@ timeout was caused by the budget design.
 
 ## 5. Discussion
 
-**Growth compared with the cubic model (H1).** The runtime did not grow by a constant factor of 8. When n
-doubled and the strided operand B stayed within the same cache level, the ratio was close to 8 (C: 7.5
-from 128 to 256 and 8.1 from 512 to 1024). When B crossed into the next level, the ratio jumped (C: 16 at
-64→128, 32.3 at 256→512 and 52.4 at 1024→2048). Table 3 shows this more clearly. In C the time per
-iteration forms steps of 0.27 ns, about 0.5 ns, about 2.0 ns and 13.3 ns. These steps match B fitting in L1
-(32 KB < 48 KB), L2 (128–512 KB < 1.25 MB), L3 (2–8 MB < 24 MB), and finally exceeding L3 (32 MB). This
-explanation is consistent with the data, but it is not proven, because cache misses were not measured with
-hardware counters. A complementary explanation is that power-of-two strides map many elements of a column
-of B to the same cache sets, causing conflict misses. Because every tested size was a power of two, the
-two effects cannot be separated here; comparing, for example, n = 1000 with n = 1024 could test this. In
-summary, the algorithm performs n³ operations, but the cost per operation depends on where the data is
-stored. H1 holds only within a cache level.
+**Does the runtime grow as n³? (H1).** Only partly. Each time n doubles, the work grows by 8, but the runtime did not always grow by 8. In C, it grew by about 8 when the matrix B stayed in the same cache level (7.5 from 128 to 256, and 8.1 from 512 to 1024). It grew much more when B stopped fitting in a cache level and moved to a slower one (16 from 64 to 128, 32.3 from 256 to 512, and 52.4 from 1024 to 2048).
 
-**Execution models (H2).** H2 is supported. CPython was between 36 and 112 times slower than C (Table 1). The ratio
-was largest at small sizes (112 at n = 64), where C ran from the fastest cache level. Each Python
-iteration costs about 30 ns even when the data fits in cache, because the interpreter dispatches bytecode,
-checks types and creates a new float object for each intermediate result. Java was close to C at
-n = 256 and n = 512 (1.12 and 1.02 times the C runtime), which is consistent with HotSpot compiling the kernel to native code. Java was slower at
-n = 64 (1.71 ns per iteration against 0.27 ns). A plausible cause is that five warm-ups of a very small
-problem may not trigger full optimisation, or that fixed per-call costs dominate at that size; this was
-not investigated. At n = 1024, Java needed 1.73 times the C runtime. Possible explanations, such as array
-bounds checks or differences in the generated code, were not tested. In the supplementary run the gap
-narrowed to 1.13 at n = 2048. This is consistent with both implementations being limited by main-memory
-access at that size, which reduces the weight of language-specific differences.
+Table 3 shows this clearly. In C, the time per iteration stays almost constant inside each level and jumps when B moves to the next one: about 0.27 ns while B fits in L1 (32 KiB < 48 KiB), about 0.5 ns in L2 (128–512 KiB < 1.25 MiB), about 2 ns in L3 (2–8 MiB < 24 MiB), and 13.3 ns once B no longer fits in L3 (32 MiB). In other words, the number of operations grows as n³, but the cost of each operation depends on where the data is stored. This explanation matches the data, but we did not measure cache misses directly, so it is not proven. Part of the slowdown could also come from using only powers of two, which can make many elements of a column compete for the same cache positions (cache conflict misses); testing sizes such as n = 1000 would help to separate both effects.
 
-**Python and the memory hierarchy (H3).** H3 is only partly supported. As predicted, the growth ratio
-stayed close to 8 for small sizes (7.8 and 8.9). However, it reached 17.6 from 256 to 512, and the time per
-iteration rose from about 30 ns to 106 ns. Memory effects therefore matter in Python too, although less
-than in C. A plausible reason is that a list of lists stores about 32 bytes per element (a pointer plus a
-float object) instead of 8, and the float objects are scattered across the heap. B therefore exceeds each
-cache level at smaller n than in C, and its accesses are less predictable.
+**Are C and Java faster than Python? (H2).** Yes. Python was between 36 and 112 times slower than C (Table 1). Each Python iteration costs about 30 ns even when the data fits in cache, because the interpreter has to check types and create a new number object for every operation, while C executes a few machine instructions.
 
-**Memory.** The peak working set has two components: a fixed runtime baseline and the matrices. C's
-baseline is about 4 MiB, and at n = 2048 its 99.8 MiB is close to the 96 MiB of three 2048 × 2048 float64
-matrices. Java has a baseline of about 47 MiB (the JVM itself). Python starts at about 13 MiB but grows
-faster than C with n, which is consistent with its per-element object overhead. The Java peak at n = 2048
-(303 MiB) is about three times the size of the matrices. This may include temporary buffers used while
-loading the input files, but the cause was not measured. Because the metric covers the whole process, it
-should not be read as "memory used by the multiplication" alone.
+Java was almost as fast as C at n = 256 and 512 (1.12 and 1.02 times the C runtime), which makes sense because, after warm-up, the JIT compiler turns the loop into machine code like C. Java was slower at n = 64, possibly because fixed costs dominate at that size, or because the JIT had not fully optimised such a short loop. It was also slower at n = 1024 (1.73 times C), for reasons we did not investigate. At n = 2048 the gap became small again (1.13 times C, from the supplementary run): at that size both programs probably spend most of their time waiting for main memory, so the language matters less.
 
-**Variability.** Relative variability was small for short runs and grew for long ones, reaching 10 % for
-Python at n = 1024. In the supplementary run the Java times rose across repetitions (from 120 s to 139 s).
-Insufficient warm-up would make times fall, not rise, so a more plausible cause is thermal throttling of
-the laptop during long runs. Processor frequency and temperature were not recorded, so this remains a
-hypothesis.
+**Is Python less affected by memory? (H3).** Only partly. As we predicted, Python grew by about 8 for small sizes (7.8 and 8.9), but from 256 to 512 it grew by 17.6, and its time per iteration rose from about 30 ns to 106 ns. So memory also matters in Python, although less than in C. A likely reason is that Python stores each element as a pointer to a separate float object (about 32 bytes in total instead of 8), scattered in memory, so its matrices stop fitting in the caches at smaller sizes.
+
+**Memory.** The memory measured for each process has two parts: a fixed part used by the language itself and the part used by the matrices. C uses almost nothing extra (about 4 MiB), and at n = 2048 its 99.8 MiB is close to the 96 MiB needed by the three matrices. The Java virtual machine uses about 47 MiB before storing any data, and Python about 13 MiB, but Python then grows faster than C because each element takes more memory. At n = 2048, Java used about three times the size of the matrices (303 MiB), possibly because of temporary buffers when loading the files; we did not measure the cause.
+
+**Variability.** Short runs were very stable, while long runs varied more (up to about 10 % for Python at n = 1024). In the supplementary run, the Java times increased from one repetition to the next (from 120 s to 139 s). A lack of warm-up would make times decrease, not increase, so a more likely cause is that the laptop slowed down as it heated up (thermal throttling). We did not record the temperature or the processor frequency, so this remains a hypothesis.
 
 **Limitations.**
 
-- All results come from one machine and operating system. They should not be generalised as "language X
-  is faster than language Y".
-- Cache behaviour was inferred from timings, not measured with hardware performance counters.
-- Only powers of two were tested, which may amplify cache-conflict effects.
-- The peak working set includes runtime and input data, and its baseline differs between languages.
-- The C timer resolution is 100 ns, which is negligible compared with the shortest median (69.6 µs).
-- The budget design penalised Java at n = 2048 (Section 4.3). The supplementary run used a different budget
-  and number of warm-ups, and was executed at a different time.
-- Before the runs, the harness did not record whether CPU pinning and priority were applied successfully,
-  so this cannot be confirmed for the reported data. The harness was corrected afterwards to log any such
-  failure.
-- CPU frequency and temperature were not recorded.
+- All results come from a single laptop, so they should not be read as “language X is always faster than language Y”.
+- The cache explanation is based on timings; cache misses were not measured directly.
+- Only powers of two were tested, which may amplify cache conflict effects.
+- The memory metric includes the language runtime and the input data, not only the multiplication.
+- The time limit penalised Java at n = 2048 (Section 4.3); the supplementary run used a different limit and was run at a different time.
+- The benchmark did not record whether CPU pinning was applied successfully, so this cannot be confirmed for the reported data. The harness was corrected afterwards.
+- Processor temperature and frequency were not recorded.
+
 
 ## 6. Conclusions
 
 Within the tested scope (one Intel Core i7-12650H laptop, Windows 11, the stated compilers and runtimes,
 float64 inputs, n from 64 to 2048), the study establishes that:
 
-1. The runtime of the naive i-j-k multiplication follows the cubic model only while the strided operand
+1. The runtime of the naive i-j-k multiplication follows the cubic model only while matrix B
    stays within one level of the memory hierarchy. Each time it moves to a slower level, the time per
    iteration rises by a factor of about 2 to 7, so the memory layout dominates the deviation from n³.
 2. CPython was 36–112 times slower than C for the same algorithm, mainly because of per-operation
@@ -311,8 +262,7 @@ float64 inputs, n from 64 to 2048), the study establishes that:
 5. Timeout budgets that include warm-ups can bias comparisons between languages with different warm-up
    requirements.
 
-The study does not establish the exact cause of the per-level slowdowns (capacity misses or set
-conflicts), the reason for the Java–C gap at n = 1024, or the source of the extra Java memory. Hardware
+The study does not establish the exact cause of the per-level slowdowns (B no longer fitting in a cache level, or cache conflicts caused by power-of-two sizes), the reason for the Java–C gap at n = 1024, or the source of the extra Java memory. Hardware
 performance counters, non-power-of-two sizes and frequency logging would address these questions.
 
 ## 7. References
