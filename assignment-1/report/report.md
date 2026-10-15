@@ -1,6 +1,6 @@
 # How Matrix Size Affects the Runtime and Memory of Naive Matrix Multiplication in Python, Java and C
 
-**Author:** Joel López Guillén <!-- REVIEW: check exact name -->  
+**Author:** Joel López Guillén  
 **Assignment:** 1 — Basic Matrix Multiplication in Different Languages  
 **Course:** BIG DATA, Grado en Ciencia e Ingeniería de Datos, Universidad de Las Palmas de Gran Canaria, 2026-2027  
 **Repository:** https://github.com/JoelLopezGuillen/big-data-matrix-multiplication (folder `assignment-1/`, tag `assignment-1`)
@@ -54,7 +54,7 @@ line on every iteration.
 Each level is larger and slower than the previous one: L1, L2, L3 and main memory [3], [4]. When the data a
 loop reuses no longer fits in a level, accesses are served by the next, slower level. On the test machine
 each performance core has a 48 KB L1 data cache and a 1.25 MB L2 cache, and the 24 MB L3 cache is
-shared [2].
+shared [2], [12].
 
 **Execution models.** C is compiled ahead of time by gcc to native code. Java is compiled to bytecode that
 the HotSpot JVM first interprets and then compiles just-in-time to optimised native code for frequently
@@ -95,7 +95,7 @@ multiplies exactly the same logical inputs [1]. The files can be regenerated wit
 | Item | Value |
 |---|---|
 | CPU | Intel Core i7-12650H: 6 performance cores (P-cores, Hyper-Threading) and 4 efficiency cores (E-cores); 10 physical cores, 16 logical processors |
-| Caches (P-core) | L1d 48 KB and L2 1.25 MB per core; L3 24 MB shared [2] |
+| Caches (P-core) | L1d 48 KB and L2 1.25 MB per core; L3 24 MB shared; 64-byte lines (reported by Windows [12]) |
 | RAM | 15.7 GiB |
 | OS | Windows 11 (build 10.0.26200) |
 | C | gcc 16.1.0 (MSYS2 UCRT64), flags `-O2 -std=c11 -Wall -Wextra` |
@@ -329,29 +329,29 @@ performance counters, non-power-of-two sizes and frequency logging would address
 
 ## 7. References
 
-<!-- REVIEW: verify every reference exists, the details are correct, and it supports the claim where it is cited. -->
-
 [1] Universidad de Las Palmas de Gran Canaria, "Individual Assignments — Matrix Multiplication," BIG DATA course, 2026-2027.
 
-[2] Notebookcheck, "Intel Core i7-12650H Processor — Benchmarks and Specs." [Online]. Available: https://notebookcheck.info/Intel-Alder-Lake-P-i7-12650H-Notebook-Processor.677906.0.html <!-- REVIEW: add or replace with the official Intel ARK page -->
+[2] Intel Corporation, "Intel Core i7-12650H Processor (24M Cache, up to 4.70 GHz) — Specifications," Intel ARK. [Online]. Available: https://www.intel.com/content/www/us/en/products/sku/226066/intel-core-i712650h-processor-24m-cache-up-to-4-70-ghz/specifications.html
 
 [3] J. L. Hennessy and D. A. Patterson, *Computer Architecture: A Quantitative Approach*, 6th ed. Cambridge, MA, USA: Morgan Kaufmann, 2017.
 
 [4] U. Drepper, "What Every Programmer Should Know About Memory," Red Hat, Inc., 2007.
 
-[5] Oracle, "Java HotSpot Virtual Machine Performance Enhancements," Java SE documentation. <!-- REVIEW: find the exact URL -->
+[5] Oracle, "Java HotSpot Virtual Machine Performance Enhancements," in *Java Virtual Machine Guide*, Release 21. [Online]. Available: https://docs.oracle.com/en/java/javase/21/vm/java-hotspot-virtual-machine-performance-enhancements.html
 
-[6] Python Software Foundation, "time — Time access and conversions," Python 3.13 documentation. [Online]. Available: https://docs.python.org/3/library/time.html
+[6] Python Software Foundation, "time — Time access and conversions," Python 3.13 documentation. [Online]. Available: https://docs.python.org/3.13/library/time.html
 
 [7] G. Rodola, "psutil documentation." [Online]. Available: https://psutil.readthedocs.io
 
 [8] Microsoft, "Acquiring high-resolution time stamps," Windows App Development documentation. [Online]. Available: https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps
 
-[9] Microsoft, "GetSystemCpuSetInformation function (processthreadsapi.h)," Win32 API documentation. <!-- REVIEW: add URL -->
+[9] Microsoft, "GetSystemCpuSetInformation function (processthreadsapi.h)," Win32 API documentation. [Online]. Available: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation
 
 [10] A. Georges, D. Buytaert, and L. Eeckhout, "Statistically rigorous Java performance evaluation," in *Proc. 22nd ACM SIGPLAN Conf. Object-Oriented Programming Systems, Languages and Applications (OOPSLA)*, 2007, pp. 57–76.
 
 [11] K. Goto and R. A. van de Geijn, "Anatomy of high-performance matrix multiplication," *ACM Trans. Math. Softw.*, vol. 34, no. 3, Art. 12, 2008.
+
+[12] Microsoft, "GetLogicalProcessorInformationEx function (sysinfoapi.h)," Win32 API documentation. [Online]. Available: https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getlogicalprocessorinformationex. Values recorded in `tools/cache_info.json`.
 
 ## 8. Reproducibility materials
 
@@ -365,8 +365,6 @@ All materials are in the repository above, in `assignment-1/`, at tag `assignmen
 - Exact setup, build, test, run and analysis commands: `assignment-1/README.md`.
 
 ## Generative AI disclosure
-
-<!-- REVIEW: adapt this text so it describes exactly how YOU used the tool. -->
 
 Claude (Anthropic), used through Claude Code, assisted with this assignment. It proposed the experimental
 design, which the author reviewed and approved. It implemented the benchmark code (the three
