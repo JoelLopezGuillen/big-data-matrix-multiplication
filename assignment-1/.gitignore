@@ -8,3 +8,6 @@ results/smoke/
 
 # Intermediate HTML for the report PDF
 report/report.html
+report/report_es.md
+report/report_es.html
+report/Informe_ES_solo_lectura.pdf

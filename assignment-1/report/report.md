@@ -3,7 +3,7 @@
 **Author:** Joel López Guillén  
 **Assignment:** 1 — Basic Matrix Multiplication in Different Languages  
 **Course:** BIG DATA, Grado en Ciencia e Ingeniería de Datos, Universidad de Las Palmas de Gran Canaria, 2026-2027  
-**Repository:** https://github.com/JoelLopezGuillen/big-data-matrix-multiplication (folder `assignment-1/`, tag `assignment-1`)
+**Repository:** https://github.com/JoelLopezGuillen/big-data-matrix-multiplication
 
 ---
 
@@ -84,12 +84,9 @@ any implementation.
 
 ### 3.2 Inputs
 
-Input matrices A and B were generated once per size with NumPy's `default_rng` (PCG64), using seed 42 for A
-and 43 for B, with values drawn uniformly from [-1, 1) as float64. They were stored as little-endian,
-row-major binary files that all three implementations read. A shared file was used instead of three
-language-specific random generators, which produce different sequences, so that every implementation
-multiplies exactly the same logical inputs [1]. The files can be regenerated with `data/generate.py`.
+To compare the three languages fairly, all of them must multiply exactly the same matrices. Each programming language has its own random number generator, so generating the matrices separately in C, Java and Python would produce different inputs. Instead, the input matrices A and B were generated once for each size by a Python script (`data/generate.py`) and saved to files that all three implementations read [1].
 
+The values are random numbers between -1 and 1 (uniform distribution over [-1, 1)), stored as 64-bit floating-point numbers (float64). They were generated with NumPy’s `default_rng` generator using fixed seeds (42 for A and 43 for B), so running the script again produces exactly the same matrices. The files store the raw binary values row by row (little-endian, row-major order), which avoids any loss of precision from converting numbers to text.
 ### 3.3 Environment
 
 | Item | Value |
@@ -103,14 +100,9 @@ multiplies exactly the same logical inputs [1]. The files can be regenerated wit
 | Python | CPython 3.13.7 |
 | Measurement tools | psutil 7.2.2, NumPy 2.5.4 (reference only) |
 
-The i7-12650H is a hybrid processor. If the operating system moved a benchmark process from a P-core to a
-slower E-core during a measurement, the timings would mix two kinds of core. The P-core logical processors
-were identified with the Windows `GetSystemCpuSetInformation` API (EfficiencyClass 1: logical processors
-0–11; EfficiencyClass 0: logical processors 12–15) [9]. Every benchmark process was pinned to processors
-0–11 and given the HIGH priority class. All implementations are single-threaded. The laptop was connected
-to mains power during the runs, and heavy applications were closed.
+Because the i7-12650H is a hybrid processor, it has two kinds of cores: fast performance cores (P-cores) and slower efficiency cores (E-cores). The operating system can move a running program from one core to another at any time. If this happened during a measurement, part of the run would be timed on a fast core and part on a slow one, making the results unreliable. To avoid this, we first checked which logical processors belong to the P-cores using a Windows function (`GetSystemCpuSetInformation`) [9]: processors 0–11 are P-cores and 12–15 are E-cores. Every benchmark process was then restricted to processors 0–11 and given high priority, so that other programs would interfere as little as possible. All implementations use a single thread. During the runs, the laptop was plugged in and heavy applications were closed.
 
-All settings above were kept fixed for every configuration of the main run.
+These settings were the same for every configuration of the main run.
 
 ### 3.4 Measurement protocol
 
@@ -134,13 +126,9 @@ All settings above were kept fixed for every configuration of the main run.
 
 ### 3.5 Correctness
 
-Before benchmarking, each implementation passed unit tests in its own language: multiplication by the
-identity matrix, by a zero matrix (on both sides), a known 2 × 2 case, a known 3 × 3 case with non-integer
-values, and the checksum function. In addition, the products of all three implementations for n = 64 and
-n = 128 were compared with NumPy's `A @ B` using `numpy.allclose` with `rtol = 1e-9` and `atol = 1e-12`.
-The tolerance allows for differences in the order of floating-point additions between our loop and NumPy's
-optimised library, while remaining far stricter than any real error. The maximum absolute error was
-5.3 × 10⁻¹⁵ and the maximum relative error 1.9 × 10⁻¹² (n = 128 and n = 64, respectively).
+Before benchmarking, we checked that every implementation computes the correct result. Each one passed unit tests with small cases of known answer: multiplication by the identity matrix, by a zero matrix, and two hand-calculated examples (2 × 2 and 3 × 3).
+
+We also compared the results of all three implementations for n = 64 and n = 128 with NumPy, using the script `cross_check.py`. Exact equality is not expected, because computers round decimal numbers and NumPy adds the values in a different order than our loop. We therefore accepted tiny differences (`numpy.allclose` with a relative tolerance of 10⁻⁹ and an absolute tolerance of 10⁻¹²), strict enough to detect any real error. The largest difference reported by `cross_check.py` was 5.3 × 10⁻¹⁵, far below the tolerance.
 
 ### 3.6 Sizes and budget
 
@@ -366,12 +354,6 @@ All materials are in the repository above, in `assignment-1/`, at tag `assignmen
 
 ## Generative AI disclosure
 
-Claude (Anthropic), used through Claude Code, assisted with this assignment. It proposed the experimental
-design, which the author reviewed and approved. It implemented the benchmark code (the three
-implementations, the tests, the harness and the analysis scripts) following that design. It explained the
-code and the results, and it drafted the text of this report from the measurements and the analysis
-discussed with the author. The author ran the benchmarks on their own machine, identified the
-warm-up/budget bias and decided to run the supplementary experiment, reviewed and edited the report, and
-checked the measurements and references. The author is responsible for the content and can explain the
-code and the conclusions. All numerical results come from the measurements in the repository; none were
-generated by the AI tool.
+In this project, I used generative AI: Claude (Anthropic), through Claude Code. During the development process, I guided the AI in the experimental design, which I subsequently reviewed and approved. I also authorized it to implement the benchmark code (the three implementations, tests, harness and analysis scripts) based on that design. The AI assisted me in understanding both the code and the results, and helped draft the text of this report based on the measurements and analysis discussed. Finally, I conducted performance tests, identified bias stemming from the warm-up phase or resource limitations, decided to carry out a supplementary experiment, edited the report, and verified the measurements and references.
+
+I have a full understanding of both the code and the conclusions. All numerical results are derived from measurements stored in the repository; none were generated by the AI tool.
