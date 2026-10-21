@@ -1,0 +1,19 @@
+{
+  "experiment": "dense",
+  "description": "Dense methods (ijk baseline, ikj, blocked) on the shared A_n/B_n inputs",
+  "methods": ["ijk", "ikj", "blocked"],
+  "blocked_tiles": [128],
+  "sizes": [64, 128, 256, 512, 768, 1024, 1536, 2048, 3072, 4096],
+  "warmups": 1,
+  "repetitions": 5,
+  "timeout_seconds": 60,
+  "load_timeout_seconds": 300,
+  "memory_budget_bytes": 4294967296,
+  "numeric_type": "float64",
+  "threads": 1,
+  "gcc_flags": ["-O2", "-std=c11", "-Wall", "-Wextra"],
+  "pin_to_performance_cores": true,
+  "priority_class": "high",
+  "output_dir": "results/dense",
+  "smoke": {"sizes": [64, 128], "repetitions": 1, "output_dir": "results/smoke/dense"}
+}

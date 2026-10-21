@@ -1,0 +1,19 @@
+{
+  "experiment": "tiles",
+  "description": "Tile-size sweep of the blocked method, used to choose the tile of the dense config",
+  "methods": ["blocked"],
+  "blocked_tiles": [16, 32, 64, 128, 256],
+  "sizes": [1024, 2048],
+  "warmups": 1,
+  "repetitions": 5,
+  "timeout_seconds": 60,
+  "load_timeout_seconds": 300,
+  "memory_budget_bytes": 4294967296,
+  "numeric_type": "float64",
+  "threads": 1,
+  "gcc_flags": ["-O2", "-std=c11", "-Wall", "-Wextra"],
+  "pin_to_performance_cores": true,
+  "priority_class": "high",
+  "output_dir": "results/tiles",
+  "smoke": {"sizes": [128, 256], "repetitions": 1, "output_dir": "results/smoke/tiles"}
+}

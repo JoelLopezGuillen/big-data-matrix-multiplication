@@ -1,0 +1,10 @@
+# Generated input matrices (reproducible via data/generate.py and data/generate_sparse.py)
+data/*.bin
+data/sparse/*.bin
+data/sparse/*.csr
+data/sparse_smoke/
+
+# Cross-check products and smoke-test output
+results/verify/
+results/smoke/
+.pytest_cache/

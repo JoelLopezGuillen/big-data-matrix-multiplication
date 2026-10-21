@@ -1,0 +1,28 @@
+{
+  "experiment": "sparse",
+  "description": "Own CSR SpGEMM (Gustavson) vs dense blocked on matched random sparse inputs",
+  "densities_percent": [0.1, 1, 5, 10, 25, 50],
+  "dense_compare_sizes": [1000, 2000, 4000],
+  "csr_only_sizes": [10000],
+  "dense_method": "blocked",
+  "dense_tile": 128,
+  "data_dir": "data/sparse",
+  "warmups": 1,
+  "repetitions": 5,
+  "timeout_seconds": 60,
+  "load_timeout_seconds": 300,
+  "memory_budget_bytes": 4294967296,
+  "numeric_type": "float64",
+  "threads": 1,
+  "gcc_flags": ["-O2", "-std=c11", "-Wall", "-Wextra"],
+  "pin_to_performance_cores": true,
+  "priority_class": "high",
+  "output_dir": "results/sparse",
+  "smoke": {
+    "dense_compare_sizes": [100, 200],
+    "csr_only_sizes": [400],
+    "repetitions": 1,
+    "data_dir": "data/sparse_smoke",
+    "output_dir": "results/smoke/sparse"
+  }
+}
