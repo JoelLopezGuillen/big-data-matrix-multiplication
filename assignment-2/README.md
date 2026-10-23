@@ -220,5 +220,11 @@ failed, skipped and not-run configurations have one row with no time).
 
 ## Report
 
-_Placeholder: the research report (methodology, results, discussion and the
-generative AI disclosure) will be added in `report/`._
+The research report is `report/report.md`, rendered to
+`report/Assignment02_LopezGuillen_Report.pdf` (methodology, results,
+discussion, references and the generative AI disclosure). To rebuild the PDF
+(needs Microsoft Edge or Google Chrome for headless printing):
+
+```powershell
+.venv\Scripts\python report\build_pdf.py
+```

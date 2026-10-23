@@ -1,0 +1,1171 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><title>Assignment 2 Report</title><style>
+@page { size: A4; margin: 20mm 18mm; }
+body { font-family: "Segoe UI", Arial, sans-serif; font-size: 10.5pt; line-height: 1.45; color: #111; }
+h1 { font-size: 17pt; margin: 0 0 8pt; line-height: 1.25; }
+h2 { font-size: 13pt; margin: 16pt 0 6pt; border-bottom: 1px solid #bbb; padding-bottom: 2pt; }
+h3 { font-size: 11pt; margin: 12pt 0 4pt; }
+p, li { text-align: justify; }
+table { border-collapse: collapse; margin: 6pt 0 10pt; font-size: 8.5pt; }
+tr { page-break-inside: avoid; }
+th, td { border: 1px solid #999; padding: 3pt 6pt; text-align: left; vertical-align: top; }
+th { background: #e8eef5; }
+img { display: block; max-width: 80%; max-height: 82mm; margin: 8pt auto 2pt; page-break-inside: avoid; }
+code { font-family: Consolas, monospace; font-size: 9pt; background: #f2f2f2; padding: 0 2pt; }
+hr { border: none; border-top: 1px solid #bbb; }
+</style></head><body><h1>Loop Reordering, Cache Blocking and CSR Storage: When Do They Speed Up Sequential Matrix Multiplication in C?</h1>
+<p><strong>Author:</strong> Joel López Guillén
+<strong>Assignment:</strong> 2 — Optimised Matrix Multiplication Approaches and Sparse Matrices
+<strong>Course:</strong> BIG DATA, Grado en Ciencia e Ingeniería de Datos, Universidad de Las Palmas de Gran Canaria, 2026-2027
+<strong>Repository:</strong> https://github.com/JoelLopezGuillen/big-data-matrix-multiplication</p>
+<hr />
+<h2>Abstract</h2>
+<p>This study asks two questions about sequential float64 matrix multiplication in C on one laptop
+(Intel Core i7-12650H, Windows 11). First, how much do loop reordering (i-k-j) and cache blocking improve
+on the naive i-j-k kernel validated in Assignment 1? Second, under which tested conditions does an own
+CSR implementation (dense-to-CSR conversion plus Gustavson SpGEMM) beat the dense blocked kernel on the
+same matrices? All kernels were validated against NumPy and SciPy and timed as one warm-up plus five
+repetitions (median and IQR), with a 60 s limit per kernel execution and a 4 GiB memory budget. Loop
+reordering alone gave 8.9–11.8× at n = 512–1536. Blocking with the best tile (T = 128, not the L1d-sized
+tile we predicted) matched i-k-j while the data fitted in cache and was 1.3–2.2× faster from n = 1536.
+The largest feasible size was 1536 for i-j-k and 4096 (the largest attempted) for the optimised kernels.
+For uniformly random sparse inputs, CSR was faster than dense up to 25 % density and slower at 50 % for
+n = 1000, 2000 and 4000. The advantage depended on n and on output fill-in, not only on the percentage of zeros.
+These conclusions apply only to the tested kernels, inputs and machine.</p>
+<h2>1. Introduction and objective</h2>
+<p>The naive i-j-k kernel of Assignment 1 [16] showed that its runtime is dominated by where matrix B
+sits in the memory hierarchy, not by the n³ operation count. This study asks whether changing the
+access pattern, or the storage format when most entries are zero, removes that cost. Part A changes
+the loop order and the traversal of the matrices without changing the arithmetic. Part B changes the
+representation, so that only non-zero entries are stored and multiplied.</p>
+<p><strong>Research questions.</strong></p>
+<ul>
+<li><strong>RQ1.</strong> How much do loop reordering (i-k-j) and cache blocking reduce the runtime of the
+  i-j-k baseline as n grows, and what is the largest feasible size of each method under the declared budget?</li>
+<li><strong>RQ2.</strong> Which tile size is best for the blocked kernel, and how does it relate to the L1d and L2 cache sizes?</li>
+<li><strong>RQ3.</strong> For matched random sparse inputs, at which densities is an own CSR SpGEMM faster and smaller in
+  memory than the dense blocked kernel, and how do size, conversion and output fill-in change the answer?</li>
+</ul>
+<p><strong>Hypotheses (predictions stated before the results were analysed).</strong></p>
+<ul>
+<li><strong>H1.</strong> i-k-j is much faster than i-j-k once B no longer fits in L2 (n ≥ 512), because it replaces the
+  stride-n column walk of B with unit-stride row walks. For small n the gain should be smaller.</li>
+<li><strong>H2.</strong> Blocking gives no gain over i-k-j while the matrices fit in cache. It is faster only once
+  the data streamed for each row of C no longer fits in the last-level cache.</li>
+<li><strong>H3.</strong> The best tile is T = 64, for which one tile (32 KiB) fits in the 48 KiB L1d cache.</li>
+<li><strong>H4.</strong> CSR is faster than dense at low density and slower at high density. The advantage shrinks as the
+  density d grows, because SpGEMM work grows as d²n³ and each sparse operation costs more than a dense one.</li>
+<li><strong>H5.</strong> The product becomes denser than the inputs (fill-in), so the memory advantage of CSR disappears
+  once C is nearly dense.</li>
+</ul>
+<h2>2. Background</h2>
+<p><strong>Locality and the cache hierarchy.</strong> Caches keep recently used data close to the processor and move it
+in 64-byte lines [3], [4]. A program is fast when it reuses data while it is still cached (temporal
+locality) and reads consecutive addresses (spatial locality). Matrices are stored row-major, so walking a
+row is cheap and walking a column touches a new cache line at every step. On the test machine each P-core
+has a 48 KiB L1d and a 1.25 MiB L2 cache, and all cores share a 24 MiB L3 [2], [14].</p>
+<p><strong>Loop reordering.</strong> The three loops of C = AB can be nested in any order without changing the result
+(up to floating-point rounding). In the i-k-j order the inner loop computes <code>C[i][j] += A[i][k] * B[k][j]</code>
+over j, so both B and C are read along rows with unit stride and <code>A[i][k]</code> stays in a register [3].
+The work is still n³ multiply-adds. Only the memory access pattern changes.</p>
+<p><strong>Cache blocking (tiling).</strong> Even with unit stride, i-k-j streams all of B (8n² bytes) once for every row
+of C. When B is larger than a cache level, it is reloaded from the next level n times. Blocking splits
+the loops into T × T tiles so that a tile of B is reused for T rows of C while it is still cached [5].
+Lam, Rothberg and Wolf showed that the best tile depends on the cache size and on the matrix size and
+stride, because of self-interference (conflict) misses. They also showed that filling the whole cache, or a
+fixed fraction of it, is not a reliable rule [5]. High-performance libraries build on the same idea with
+several levels of blocking and packed buffers [6].</p>
+<p><strong>CSR format.</strong> Compressed Sparse Row stores a matrix with nnz non-zeros in three arrays: the values,
+their column indices, and a row-pointer array of length n + 1 that marks where each row starts [7].
+Here the values are float64, the column indices int32 and the row pointers int64, i.e. 12 bytes per
+non-zero plus 8(n + 1) bytes, compared with 8n² bytes for the dense form.</p>
+<p><strong>Gustavson SpGEMM.</strong> Gustavson's algorithm builds C row by row: row i of C is the sum of the rows k of B
+scaled by each non-zero <code>A[i][k]</code> [8]. Only products of two non-zeros are computed. For uniformly random
+inputs of density d, the expected number of multiply-adds is d²n³, compared with n³ for a dense kernel.
+The cost per operation is higher, because each product needs an index lookup and an irregular write into
+an accumulator.</p>
+<p><strong>Output fill-in.</strong> An entry C[i][j] is structurally non-zero if at least one of the n products
+A[i][k]B[k][j] has two non-zero factors. If entries are independent with probability d, each product is
+non-zero with probability d², so the expected output density is 1 − (1 − d²)ⁿ. This value grows with n as well as with d:
+for d = 1 % it is 9.5 % at n = 1000 but 63 % at n = 10000. Once C is dense, CSR stores it with
+12 bytes per entry instead of 8.</p>
+<h2>3. Methodology</h2>
+<h3>3.1 Implementations (own code vs libraries)</h3>
+<p>All timed code is our own C code (<code>c/matmul.c</code>, <code>c/csr.c</code>), compiled with gcc, float64 and one thread.
+NumPy [10] and SciPy [9] are used only as correctness references, and NumPy also for input generation and
+analysis. No library kernel is benchmarked.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ijk</code> (baseline)</td>
+<td>Assignment 1 C kernel (tag <code>assignment-1</code>), copied verbatim and only renamed: dot product in a local accumulator, B read by columns</td>
+</tr>
+<tr>
+<td><code>ikj</code></td>
+<td>loop reordering: <code>A[i][k]</code> hoisted, inner loop over j adds <code>a_ik * B[k][j]</code> into row i of C with unit stride</td>
+</tr>
+<tr>
+<td><code>blocked</code></td>
+<td>cache blocking with square T × T tiles: tile loops ii-kk-jj, i-k-j micro-kernel inside each tile, shorter edge tiles when T does not divide n</td>
+</tr>
+<tr>
+<td><code>dense_to_csr</code></td>
+<td>own conversion of A and B: one pass counts the non-zeros, then exact allocation, then a second pass fills the arrays</td>
+</tr>
+<tr>
+<td><code>csr_gustavson</code></td>
+<td>own SpGEMM: symbolic pass (nnz of each row of C, using a marker array), exact allocation of C, numeric pass with a dense accumulator and marker, column indices sorted per row (insertion sort or <code>qsort</code>, or a linear scan of the marker array when a row fills at least 1/64 of the columns)</td>
+</tr>
+</tbody>
+</table>
+<p>The three dense kernels allocate and zero-initialise C with <code>calloc</code> inside the function, as in Assignment 1.
+The SpGEMM keeps every <em>structural</em> non-zero, including entries whose products cancel to exactly 0.0.
+SciPy drops such entries, so the cross-check handles both cases (Section 3.5).</p>
+<h3>3.2 Inputs</h3>
+<ul>
+<li><strong>Dense inputs (Part A).</strong> Reused from Assignment 1: <code>data/generate.py</code> writes <code>A_n{n}.bin</code> and
+  <code>B_n{n}.bin</code> with NumPy <code>default_rng</code> (PCG64), values uniform in [−1, 1), seeds 42 (A) and 43 (B),
+  raw little-endian float64 in row-major order. All three methods read the same files.</li>
+<li><strong>Sparse inputs (Part B).</strong> <code>data/generate_sparse.py</code> draws exactly nnz = round(d·n²) distinct positions
+  uniformly without replacement, then values uniform in [−1, 1), redrawing any exact 0.0 (seeds 42 and 43).
+  Each matrix is written in CSR and, for the sizes compared with dense, also as a dense file holding the
+  same matrix (its dense twin), so that both methods multiply identical inputs. Parameters are recorded
+  in <code>data/sparse/manifest.json</code>. Density is the percentage of non-zero entries and sparsity the
+  percentage of zeros (100 − density).</li>
+<li><strong>Sizes.</strong> Part A: n = 64, 128, 256, 512, 768, 1024, 1536, 2048, 3072, 4096. Tile sweep: T = 16, 32,
+  64, 128, 256 at n = 1024 and 2048. Part B: densities 0.1, 1, 5, 10, 25 and 50 % at n = 1000, 2000 and
+  4000 (CSR and dense blocked with the tile chosen in the sweep), plus n = 10000 for CSR only (no dense twin
+  is generated at that size, so the dense run and the conversion were not run by design).</li>
+</ul>
+<h3>3.3 Environment</h3>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CPU</td>
+<td>Intel Core i7-12650H: 6 P-cores (Hyper-Threading) and 4 E-cores; 10 physical cores, 16 logical processors</td>
+</tr>
+<tr>
+<td>Caches (P-core)</td>
+<td>L1d 48 KiB and L2 1.25 MiB per core; L3 24 MiB shared; 64-byte lines (<code>tools/cache_info.json</code> [14])</td>
+</tr>
+<tr>
+<td>RAM</td>
+<td>15.7 GiB</td>
+</tr>
+<tr>
+<td>OS</td>
+<td>Windows 11 (build 10.0.26200)</td>
+</tr>
+<tr>
+<td>Compiler</td>
+<td>gcc 16.1.0 (MSYS2 UCRT64), <code>-O2 -std=c11 -Wall -Wextra</code>, no <code>-march=native</code></td>
+</tr>
+<tr>
+<td>Python tools</td>
+<td>CPython 3.13.7, NumPy 2.5.4, SciPy 1.18.1 (references only), psutil 7.2.2</td>
+</tr>
+<tr>
+<td>Execution</td>
+<td>1 thread; process pinned to the P-core logical processors 0–11 (found with <code>GetSystemCpuSetInformation</code> [13]), high priority</td>
+</tr>
+<tr>
+<td>Runs</td>
+<td>2026-10-21: tile sweep from 19:25, dense from 19:48, sparse from 20:01</td>
+</tr>
+</tbody>
+</table>
+<p>The harness records a note in the CSV if CPU affinity or priority cannot be applied. No such note appears
+in any of the three result files, so pinning was in effect for all reported data. This addresses a
+limitation of Assignment 1.</p>
+<h3>3.4 Measurement protocol and budgets</h3>
+<ul>
+<li><strong>Timing boundary.</strong> One kernel call is timed with <code>QueryPerformanceCounter</code> (100 ns resolution [12]).
+  Dense kernels and SpGEMM include the allocation of C. The conversion includes the allocation of both
+  CSR matrices. Input loading, checksums and <code>free</code> are outside the timed region. The CSR end-to-end time is
+  <em>derived</em> as median conversion + median SpGEMM. It is not a separate measured run, and it is never mixed
+  with the kernel-only times without being labelled.</li>
+<li><strong>Repetitions.</strong> One child process per configuration loads the inputs, runs 1 warm-up (excluded) and
+  5 measured repetitions, and prints a checksum of C after every repetition so that the work cannot be
+  eliminated. We report the median and the interquartile range (IQR = Q3 − Q1). All raw rows are kept in
+  <code>results/{tiles,dense,sparse}/raw_measurements.csv</code>.</li>
+<li><strong>Memory metric.</strong> Peak working set (<code>peak_wset</code>) of the child process, read with psutil [11] by the
+  harness while the child waits on stdin after printing its results. This is the operating system's peak
+  counter for the whole process (inputs, output, workspace and runtime) over the warm-up and all
+  repetitions, not the storage of the output alone.</li>
+<li><strong>Budgets (declared before measuring).</strong> Time: 60 s per kernel execution. The deadline restarts after
+  every warm-up or repetition, and a single execution above 60 s kills the process and is recorded as
+  <code>timeout</code> with no time. Memory: 4 GiB peak working set. The estimate (3·8n² bytes for dense; CSR inputs
+  plus a CSR output with the expected nnz for SpGEMM) is checked before launch. While the process runs, its working set is
+  polled every 0.25 s and the process is killed above the budget. After a failure at size n, larger sizes
+  of the same series are recorded as <code>skipped_after_&lt;status&gt;</code>.</li>
+</ul>
+<h3>3.5 Correctness</h3>
+<p>The C unit tests (<code>c/test_matmul.c</code>) cover identity, zero and hand-computed 1×1, 2×2 and 3×3 products
+for every dense method. They check that all methods agree with <code>ijk</code> for n = 1, 7, 63, 64, 65 and 130
+with tiles 16, 64 and 128 (including edge tiles), and that tile = 0 is rejected. For CSR they cover a known
+conversion with an empty row, the dense→CSR→dense round trip, all-zero and identity matrices, a known
+product, a structural zero created by cancellation, a shape mismatch, SpGEMM against dense <code>ijk</code> on random
+matrices, and the file round trip.</p>
+<p><code>cross_check.py</code> compares every dense method (tiles 16, 64, 128) with NumPy <code>A @ B</code> for n = 64, 100 and
+130. For n = 50 and 200 at all six densities, it checks that the own conversion reproduces the generated
+CSR exactly and compares the own SpGEMM with <code>scipy.sparse</code> <code>A @ B</code>. That comparison covers the values,
+the sorted CSR structure, the structural nnz (equal to the nnz of the boolean product pattern) and the
+entries that are numerically non-zero (a disagreement is allowed only for entries within atol of zero, because SciPy
+drops exact zeros). As in Assignment 1, values must satisfy <code>numpy.allclose</code> with rtol = 10⁻⁹ and
+atol = 10⁻¹². The rounding error from a different summation order is about n·2⁻⁵³ relative (around
+10⁻¹³ here), while an indexing error produces O(1) differences. In the stored cross-check outputs the
+largest dense difference was 1.6 × 10⁻¹⁴. The SpGEMM values were identical to SciPy's, and the structural nnz matched
+SciPy's in all twelve sparse cases (no exact cancellation occurred in these inputs; it is covered by the unit test).</p>
+<h2>4. Results</h2>
+<h3>4.1 Tile sweep (Part A)</h3>
+<p><strong>Table 1.</strong> Blocked kernel runtime against tile size: median and IQR of 5 repetitions (seconds). The
+last column is the size of the three T × T tiles touched by the micro-kernel (3·8T² bytes).</p>
+<table>
+<thead>
+<tr>
+<th>T</th>
+<th>n = 1024 median</th>
+<th>IQR</th>
+<th>n = 2048 median</th>
+<th>IQR</th>
+<th>Three tiles</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>16</td>
+<td>0.238</td>
+<td>0.0024</td>
+<td>3.27</td>
+<td>0.134</td>
+<td>6 KiB</td>
+</tr>
+<tr>
+<td>32</td>
+<td>0.202</td>
+<td>0.0006</td>
+<td>2.92</td>
+<td>0.009</td>
+<td>24 KiB</td>
+</tr>
+<tr>
+<td>64</td>
+<td>0.213</td>
+<td>0.0005</td>
+<td>2.78</td>
+<td>0.038</td>
+<td>96 KiB</td>
+</tr>
+<tr>
+<td><strong>128</strong></td>
+<td><strong>0.193</strong></td>
+<td>0.0028</td>
+<td><strong>2.58</strong></td>
+<td>0.045</td>
+<td>384 KiB</td>
+</tr>
+<tr>
+<td>256</td>
+<td>0.231</td>
+<td>0.0009</td>
+<td>2.98</td>
+<td>0.095</td>
+<td>1.5 MiB</td>
+</tr>
+</tbody>
+</table>
+<p><img alt="Tile sweep" src="../results/tiles/tile_sweep.png" /></p>
+<p><strong>Figure 1.</strong> Blocked kernel runtime against tile size at n = 1024 and 2048 (log scales, IQR error bars).
+The dotted lines mark where three tiles fill the L1d (T ≈ 45) and the L2 (T ≈ 234).</p>
+<p>T = 128 was the fastest tile at both sizes and was used for every later blocked run. It was 5 % faster than
+the second-best tile at n = 1024 (T = 32) and 8 % faster than the second-best at n = 2048 (T = 64). H3 is therefore rejected.</p>
+<h3>4.2 Dense methods (Part A)</h3>
+<p><strong>Table 2.</strong> Kernel runtime: median and IQR of 5 repetitions (seconds). Blocked uses T = 128.
+Timeout = one kernel execution exceeded 60 s.</p>
+<table>
+<thead>
+<tr>
+<th>n</th>
+<th>ijk median</th>
+<th>ijk IQR</th>
+<th>ikj median</th>
+<th>ikj IQR</th>
+<th>blocked median</th>
+<th>blocked IQR</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>64</td>
+<td>0.0000699</td>
+<td>0.0000021</td>
+<td>0.0000376</td>
+<td>0.0000001</td>
+<td>0.0000407</td>
+<td>0.0000037</td>
+</tr>
+<tr>
+<td>128</td>
+<td>0.000991</td>
+<td>0.000003</td>
+<td>0.000405</td>
+<td>0.000001</td>
+<td>0.000346</td>
+<td>0.000042</td>
+</tr>
+<tr>
+<td>256</td>
+<td>0.00806</td>
+<td>0.00037</td>
+<td>0.00291</td>
+<td>0.000004</td>
+<td>0.00294</td>
+<td>0.00007</td>
+</tr>
+<tr>
+<td>512</td>
+<td>0.278</td>
+<td>0.001</td>
+<td>0.0236</td>
+<td>0.0004</td>
+<td>0.0237</td>
+<td>0.0002</td>
+</tr>
+<tr>
+<td>768</td>
+<td>0.697</td>
+<td>0.055</td>
+<td>0.0780</td>
+<td>0.0013</td>
+<td>0.0800</td>
+<td>0.0019</td>
+</tr>
+<tr>
+<td>1024</td>
+<td>2.19</td>
+<td>0.05</td>
+<td>0.196</td>
+<td>0.001</td>
+<td>0.191</td>
+<td>0.002</td>
+</tr>
+<tr>
+<td>1536</td>
+<td>9.61</td>
+<td>0.08</td>
+<td>0.856</td>
+<td>0.017</td>
+<td>0.641</td>
+<td>0.007</td>
+</tr>
+<tr>
+<td>2048</td>
+<td>timeout</td>
+<td>—</td>
+<td>3.15</td>
+<td>0.02</td>
+<td>1.96</td>
+<td>0.02</td>
+</tr>
+<tr>
+<td>3072</td>
+<td>skipped</td>
+<td>—</td>
+<td>11.48</td>
+<td>0.18</td>
+<td>5.15</td>
+<td>0.02</td>
+</tr>
+<tr>
+<td>4096</td>
+<td>skipped</td>
+<td>—</td>
+<td>27.31</td>
+<td>0.09</td>
+<td>16.91</td>
+<td>0.05</td>
+</tr>
+</tbody>
+</table>
+<p>The largest feasible tested size was n = 1536 for ijk (its first execution at n = 2048 exceeded 60 s)
+and n = 4096 for ikj and blocked. The largest size attempted was 4096 for the optimised methods and 2048 for ijk.
+The memory budget was never reached: the estimate at n = 4096 is 384 MiB.</p>
+<p><strong>Table 3.</strong> Time per inner-loop iteration T/n³ (nanoseconds) and speedups ("X vs Y" = median time of Y /
+median time of X). The size of B (8n² bytes) is shown for reference.</p>
+<table>
+<thead>
+<tr>
+<th>n</th>
+<th>Size of B</th>
+<th>ijk</th>
+<th>ikj</th>
+<th>blocked</th>
+<th>ikj vs ijk</th>
+<th>blocked vs ijk</th>
+<th>blocked vs ikj</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>64</td>
+<td>32 KiB</td>
+<td>0.27</td>
+<td>0.14</td>
+<td>0.16</td>
+<td>1.86</td>
+<td>1.72</td>
+<td>0.92</td>
+</tr>
+<tr>
+<td>128</td>
+<td>128 KiB</td>
+<td>0.47</td>
+<td>0.19</td>
+<td>0.17</td>
+<td>2.45</td>
+<td>2.86</td>
+<td>1.17</td>
+</tr>
+<tr>
+<td>256</td>
+<td>512 KiB</td>
+<td>0.48</td>
+<td>0.17</td>
+<td>0.18</td>
+<td>2.77</td>
+<td>2.74</td>
+<td>0.99</td>
+</tr>
+<tr>
+<td>512</td>
+<td>2 MiB</td>
+<td>2.07</td>
+<td>0.18</td>
+<td>0.18</td>
+<td>11.76</td>
+<td>11.72</td>
+<td>1.00</td>
+</tr>
+<tr>
+<td>768</td>
+<td>4.5 MiB</td>
+<td>1.54</td>
+<td>0.17</td>
+<td>0.18</td>
+<td>8.94</td>
+<td>8.72</td>
+<td>0.98</td>
+</tr>
+<tr>
+<td>1024</td>
+<td>8 MiB</td>
+<td>2.04</td>
+<td>0.18</td>
+<td>0.18</td>
+<td>11.18</td>
+<td>11.49</td>
+<td>1.03</td>
+</tr>
+<tr>
+<td>1536</td>
+<td>18 MiB</td>
+<td>2.65</td>
+<td>0.24</td>
+<td>0.18</td>
+<td>11.22</td>
+<td>14.98</td>
+<td>1.34</td>
+</tr>
+<tr>
+<td>2048</td>
+<td>32 MiB</td>
+<td>—</td>
+<td>0.37</td>
+<td>0.23</td>
+<td>—</td>
+<td>—</td>
+<td>1.61</td>
+</tr>
+<tr>
+<td>3072</td>
+<td>72 MiB</td>
+<td>—</td>
+<td>0.40</td>
+<td>0.18</td>
+<td>—</td>
+<td>—</td>
+<td>2.23</td>
+</tr>
+<tr>
+<td>4096</td>
+<td>128 MiB</td>
+<td>—</td>
+<td>0.40</td>
+<td>0.25</td>
+<td>—</td>
+<td>—</td>
+<td>1.61</td>
+</tr>
+</tbody>
+</table>
+<p><img alt="Runtime vs n" src="../results/dense/runtime_vs_n.png" /></p>
+<p><strong>Figure 2.</strong> Dense kernel runtime against n (log-log scale, IQR error bars).</p>
+<p><img alt="Speedup vs n" src="../results/dense/speedup_vs_n.png" /></p>
+<p><strong>Figure 3.</strong> Speedup of ikj and blocked over ijk (median ijk / median method), for the sizes where ijk completed.</p>
+<p>Variability within a run was low. From n = 256 the IQR was at most 2.4 % of the median for ikj and
+blocked, and at most 7.9 % for ijk (n = 768). The larger relative IQRs at n = 64–128 (up to 12 %) are
+absolute spreads of at most 42 µs. The peak working set was the same for the three methods at each size, from
+3.9 MiB at n = 64 to 387.8 MiB at n = 4096, close to the 384 MiB of A, B and C
+(<code>results/dense/memory_vs_n.png</code>).</p>
+<h3>4.3 Run-to-run variation</h3>
+<p>The blocked kernel with T = 128 was measured in two separate runs. At n = 1024 the two medians agree
+within 1 % (0.193 s in the tile sweep, 0.191 s in the dense run). At n = 2048 they differ by 31 %:
+2.58 s (IQR 0.045 s) in the tile sweep and 1.96 s (IQR 0.018 s) in the later dense run. Both
+IQRs are small, so the difference lies between runs, not within them. A likely cause is a different
+turbo, thermal or power state of the laptop, but frequency and temperature were not recorded. Therefore
+we only compare methods within a run: the tile sweep is used only to rank tiles, and the dense and
+sparse results are each compared within their own run.</p>
+<h3>4.4 Sparse vs dense (Part B)</h3>
+<p><strong>Table 4.</strong> Own CSR vs dense blocked (T = 128) on the same matrices: medians of 5 repetitions (seconds).
+Output density is measured / expected, with expected = 1 − (1 − d²)ⁿ. End-to-end = convert + SpGEMM (derived).
+The last column is the dense time divided by the CSR end-to-end time (&gt; 1 means CSR is faster).</p>
+<table>
+<thead>
+<tr>
+<th>n</th>
+<th>d (%)</th>
+<th>nnz A (= nnz B)</th>
+<th>nnz C</th>
+<th>C density (%)</th>
+<th>SpGEMM</th>
+<th>Convert A+B</th>
+<th>End-to-end</th>
+<th>Dense</th>
+<th>Dense / end-to-end</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1000</td>
+<td>0.1</td>
+<td>1 000</td>
+<td>958</td>
+<td>0.096 / 0.100</td>
+<td>0.0000092</td>
+<td>0.00221</td>
+<td>0.00222</td>
+<td>0.187</td>
+<td>84.4</td>
+</tr>
+<tr>
+<td>1000</td>
+<td>1</td>
+<td>10 000</td>
+<td>95 440</td>
+<td>9.54 / 9.52</td>
+<td>0.00144</td>
+<td>0.00211</td>
+<td>0.00355</td>
+<td>0.176</td>
+<td>49.7</td>
+</tr>
+<tr>
+<td>1000</td>
+<td>5</td>
+<td>50 000</td>
+<td>918 565</td>
+<td>91.9 / 91.8</td>
+<td>0.0157</td>
+<td>0.00291</td>
+<td>0.0186</td>
+<td>0.179</td>
+<td>9.62</td>
+</tr>
+<tr>
+<td>1000</td>
+<td>10</td>
+<td>100 000</td>
+<td>999 958</td>
+<td>99.996 / 99.996</td>
+<td>0.0239</td>
+<td>0.00405</td>
+<td>0.0280</td>
+<td>0.177</td>
+<td>6.34</td>
+</tr>
+<tr>
+<td>1000</td>
+<td>25</td>
+<td>250 000</td>
+<td>1 000 000</td>
+<td>100 / 100</td>
+<td>0.0663</td>
+<td>0.00644</td>
+<td>0.0727</td>
+<td>0.175</td>
+<td>2.40</td>
+</tr>
+<tr>
+<td>1000</td>
+<td>50</td>
+<td>500 000</td>
+<td>1 000 000</td>
+<td>100 / 100</td>
+<td>0.216</td>
+<td>0.0101</td>
+<td>0.226</td>
+<td>0.176</td>
+<td>0.78</td>
+</tr>
+<tr>
+<td>2000</td>
+<td>0.1</td>
+<td>4 000</td>
+<td>7 868</td>
+<td>0.197 / 0.200</td>
+<td>0.000201</td>
+<td>0.0117</td>
+<td>0.0119</td>
+<td>1.446</td>
+<td>122</td>
+</tr>
+<tr>
+<td>2000</td>
+<td>1</td>
+<td>40 000</td>
+<td>724 188</td>
+<td>18.1 / 18.1</td>
+<td>0.00991</td>
+<td>0.00993</td>
+<td>0.0198</td>
+<td>1.406</td>
+<td>70.9</td>
+</tr>
+<tr>
+<td>2000</td>
+<td>5</td>
+<td>200 000</td>
+<td>3 973 101</td>
+<td>99.3 / 99.3</td>
+<td>0.0809</td>
+<td>0.0147</td>
+<td>0.0956</td>
+<td>1.414</td>
+<td>14.8</td>
+</tr>
+<tr>
+<td>2000</td>
+<td>10</td>
+<td>400 000</td>
+<td>4 000 000</td>
+<td>100 / 100</td>
+<td>0.136</td>
+<td>0.0197</td>
+<td>0.156</td>
+<td>1.420</td>
+<td>9.11</td>
+</tr>
+<tr>
+<td>2000</td>
+<td>25</td>
+<td>1 000 000</td>
+<td>4 000 000</td>
+<td>100 / 100</td>
+<td>0.496</td>
+<td>0.0282</td>
+<td>0.524</td>
+<td>1.427</td>
+<td>2.72</td>
+</tr>
+<tr>
+<td>2000</td>
+<td>50</td>
+<td>2 000 000</td>
+<td>4 000 000</td>
+<td>100 / 100</td>
+<td>1.823</td>
+<td>0.0415</td>
+<td>1.865</td>
+<td>1.400</td>
+<td>0.75</td>
+</tr>
+<tr>
+<td>4000</td>
+<td>0.1</td>
+<td>16 000</td>
+<td>64 204</td>
+<td>0.401 / 0.399</td>
+<td>0.00176</td>
+<td>0.0398</td>
+<td>0.0416</td>
+<td>11.24</td>
+<td>270</td>
+</tr>
+<tr>
+<td>4000</td>
+<td>1</td>
+<td>160 000</td>
+<td>5 275 068</td>
+<td>33.0 / 33.0</td>
+<td>0.0745</td>
+<td>0.0483</td>
+<td>0.123</td>
+<td>11.22</td>
+<td>91.4</td>
+</tr>
+<tr>
+<td>4000</td>
+<td>5</td>
+<td>800 000</td>
+<td>15 999 280</td>
+<td>99.996 / 99.996</td>
+<td>0.416</td>
+<td>0.0650</td>
+<td>0.481</td>
+<td>11.25</td>
+<td>23.4</td>
+</tr>
+<tr>
+<td>4000</td>
+<td>10</td>
+<td>1 600 000</td>
+<td>16 000 000</td>
+<td>100 / 100</td>
+<td>0.889</td>
+<td>0.0779</td>
+<td>0.967</td>
+<td>11.19</td>
+<td>11.6</td>
+</tr>
+<tr>
+<td>4000</td>
+<td>25</td>
+<td>4 000 000</td>
+<td>16 000 000</td>
+<td>100 / 100</td>
+<td>4.844</td>
+<td>0.119</td>
+<td>4.963</td>
+<td>11.25</td>
+<td>2.27</td>
+</tr>
+<tr>
+<td>4000</td>
+<td>50</td>
+<td>8 000 000</td>
+<td>16 000 000</td>
+<td>100 / 100</td>
+<td>17.953</td>
+<td>0.161</td>
+<td>18.114</td>
+<td>11.17</td>
+<td>0.62</td>
+</tr>
+<tr>
+<td>10000</td>
+<td>0.1</td>
+<td>100 000</td>
+<td>994 450</td>
+<td>0.994 / 0.995</td>
+<td>0.0410</td>
+<td>not run</td>
+<td>—</td>
+<td>not run</td>
+<td>—</td>
+</tr>
+<tr>
+<td>10000</td>
+<td>1</td>
+<td>1 000 000</td>
+<td>63 211 362</td>
+<td>63.2 / 63.2</td>
+<td>1.074</td>
+<td>not run</td>
+<td>—</td>
+<td>not run</td>
+<td>—</td>
+</tr>
+<tr>
+<td>10000</td>
+<td>5</td>
+<td>5 000 000</td>
+<td>100 000 000</td>
+<td>100 / 100</td>
+<td>5.449</td>
+<td>not run</td>
+<td>—</td>
+<td>not run</td>
+<td>—</td>
+</tr>
+<tr>
+<td>10000</td>
+<td>10</td>
+<td>10 000 000</td>
+<td>100 000 000</td>
+<td>100 / 100</td>
+<td>16.187</td>
+<td>not run</td>
+<td>—</td>
+<td>not run</td>
+<td>—</td>
+</tr>
+<tr>
+<td>10000</td>
+<td>25</td>
+<td>25 000 000</td>
+<td>—</td>
+<td>— / 100</td>
+<td>timeout</td>
+<td>not run</td>
+<td>—</td>
+<td>not run</td>
+<td>—</td>
+</tr>
+<tr>
+<td>10000</td>
+<td>50</td>
+<td>50 000 000</td>
+<td>—</td>
+<td>— / 100</td>
+<td>timeout</td>
+<td>not run</td>
+<td>—</td>
+<td>not run</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>Within-run variability was low except for the shortest runs. From 1 % density the SpGEMM IQR was at most
+5.4 % of the median (n = 2000, 50 %). At 0.1 % the SpGEMM takes microseconds and the relative IQR
+reached 73 % at n = 1000 (6.7 µs). The dense IQR was at most 13 % (n = 1000, 0.1 %, a 25 ms spread) and
+at most 5.2 % elsewhere. All IQRs are in <code>results/sparse/summary.md</code>. At n = 10000 the CSR kernel was
+feasible up to 10 % density (16.2 s); at 25 % and 50 % its first execution exceeded 60 s.</p>
+<p><img alt="Sparse time vs density" src="../results/sparse/sparse_time_vs_density.png" /></p>
+<p><strong>Figure 4.</strong> SpGEMM, CSR end-to-end and dense blocked times against input density for each n (log scales).</p>
+<p><img alt="Output density" src="../results/sparse/output_density.png" /></p>
+<p><strong>Figure 5.</strong> Measured output density of C against input density, with the expected 1 − (1 − d²)ⁿ (dashed;
+the measured and expected curves overlap).</p>
+<p><strong>Table 5.</strong> Cost per multiply-add (nanoseconds): SpGEMM time / (d²n³) and dense time / n³.</p>
+<table>
+<thead>
+<tr>
+<th>d (%)</th>
+<th>SpGEMM n = 1000</th>
+<th>n = 2000</th>
+<th>n = 4000</th>
+<th>n = 10000</th>
+<th>Dense blocked (all d)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.1</td>
+<td>9.2</td>
+<td>25.2</td>
+<td>27.5</td>
+<td>41.0</td>
+<td>0.175–0.187</td>
+</tr>
+<tr>
+<td>1</td>
+<td>14.4</td>
+<td>12.4</td>
+<td>11.6</td>
+<td>10.7</td>
+<td></td>
+</tr>
+<tr>
+<td>5</td>
+<td>6.3</td>
+<td>4.0</td>
+<td>2.6</td>
+<td>2.2</td>
+<td></td>
+</tr>
+<tr>
+<td>10</td>
+<td>2.4</td>
+<td>1.7</td>
+<td>1.4</td>
+<td>1.6</td>
+<td></td>
+</tr>
+<tr>
+<td>25</td>
+<td>1.06</td>
+<td>0.99</td>
+<td>1.21</td>
+<td>—</td>
+<td></td>
+</tr>
+<tr>
+<td>50</td>
+<td>0.86</td>
+<td>0.91</td>
+<td>1.12</td>
+<td>—</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Table 6.</strong> Peak working set of the benchmark process (MiB). The dense value did not depend on density.
+The conversion process also holds the two dense inputs.</p>
+<table>
+<thead>
+<tr>
+<th>d (%)</th>
+<th>SpGEMM n = 1000</th>
+<th>n = 2000</th>
+<th>n = 4000</th>
+<th>n = 10000</th>
+<th>Conversion n = 4000</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0.1</td>
+<td>3.9</td>
+<td>4.0</td>
+<td>5.0</td>
+<td>17.8</td>
+<td>248.4</td>
+</tr>
+<tr>
+<td>1</td>
+<td>5.2</td>
+<td>13.1</td>
+<td>68.0</td>
+<td>750.4</td>
+<td>252.2</td>
+</tr>
+<tr>
+<td>5</td>
+<td>15.5</td>
+<td>53.9</td>
+<td>205.3</td>
+<td>1263.0</td>
+<td>266.3</td>
+</tr>
+<tr>
+<td>10</td>
+<td>17.6</td>
+<td>58.8</td>
+<td>223.7</td>
+<td>1377.4</td>
+<td>284.6</td>
+</tr>
+<tr>
+<td>25</td>
+<td>21.0</td>
+<td>72.5</td>
+<td>278.6</td>
+<td>—</td>
+<td>339.5</td>
+</tr>
+<tr>
+<td>50</td>
+<td>26.7</td>
+<td>95.4</td>
+<td>370.1</td>
+<td>—</td>
+<td>431.1</td>
+</tr>
+<tr>
+<td>Dense blocked</td>
+<td>26.7</td>
+<td>95.3–95.4</td>
+<td>370.0</td>
+<td>not run</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p><img alt="Sparse memory vs density" src="../results/sparse/sparse_memory_vs_density.png" /></p>
+<p><strong>Figure 6.</strong> Peak working set of the SpGEMM, conversion and dense blocked processes against input density.</p>
+<h2>5. Discussion</h2>
+<h3>5.1 Effects of the optimisations (Part A)</h3>
+<p><strong>Loop reordering (H1).</strong> Supported. i-k-j was 1.9–2.8× faster than i-j-k for n ≤ 256 and 8.9–11.8×
+faster for n = 512–1536 (Table 3). The jump coincides with the step already seen in Assignment 1 [16]. The
+ijk time grew 34× from n = 256 to 512 for 8× more operations, and its cost per iteration rose from
+0.48 to 2.07 ns as B (512 KiB → 2 MiB) left the L2 cache. ikj stayed at 0.14–0.19 ns per iteration up to n = 1024, i.e.
+it followed n³, because each inner iteration reads consecutive elements of B and C. ijk at n = 768
+(1.54 ns) was cheaper than at 512 and 1024 (about 2.05 ns), although B is larger than L2 at all three sizes.
+This is consistent with the suspicion from Assignment 1 that power-of-two strides add conflict misses to the
+column walk [5]. ikj deviated from n³ when B approached and then exceeded the L3: 0.24 ns at n = 1536
+(18 MiB) and about 0.4 ns from n = 2048 (32 MiB &gt; 24 MiB). At those sizes most of B has to come from
+main memory again for every row of C.</p>
+<p><strong>Cache blocking (H2).</strong> Supported. Blocked and ikj were within 3 % of each other from n = 256 to 1024,
+where B fits in L2 or L3, so blocking adds nothing when no data has to be re-fetched from a slower level.
+From n = 1536 blocked was 1.34–2.23× faster than ikj, and its cost per iteration stayed at about 0.18 ns at
+n = 1536 and 3072. A tile of B is reused for 128 rows of C while it is cached, instead of being reloaded for
+every row. Blocking was slower per iteration at n = 2048 and 4096 (0.23–0.25 ns) than at 3072 (0.18 ns).
+This matches Lam et al.'s observation that power-of-two leading dimensions map the rows of a tile to the
+same cache sets [5]. We did not measure cache misses, so this remains a plausible explanation, not a
+proven one. Blocking raised the gain over ijk to 15× at n = 1536. Both optimised kernels made
+n = 4096 feasible within the budget (27.3 s and 16.9 s), while ijk already exceeded 60 s at n = 2048.</p>
+<p><strong>Tile size (H3).</strong> Rejected: T = 128 was best at both n, not the L1d-sized T = 64 (or T ≈ 45 if all three
+tiles had to fit in L1d). A plausible explanation follows from the access pattern of the micro-kernel.
+The innermost loop touches only one row segment of the B tile and one of C (2·8T = 2 KiB at T = 128),
+which fits easily in L1d. The data that must stay cached for reuse across the i loop is the whole B tile
+(128 KiB). Three 128 × 128 tiles occupy 384 KiB, which fits in the 1.25 MiB L2, while three 256 × 256 tiles
+(1.5 MiB) do not, and T = 256 was slower again. Small tiles (16, 32) lose for another reason: the j
+loop is only 16–32 elements long, so loop overhead and the start-up of the inner loop weigh more.
+GCC enables vectorisation at <code>-O2</code> [15], but we did not inspect the generated code. Without hardware
+counters this explanation is plausible, not proven.</p>
+<h3>5.2 Effects of sparse storage and input structure (Part B)</h3>
+<p>These results compare a different representation and algorithm with the best dense kernel of Part A.
+They do not measure an optimisation of the same dense algorithm.</p>
+<p><strong>Where CSR helps (H4).</strong> Supported, with a crossover at a high density. The dense time was independent of
+density (0.175–0.187 s at n = 1000, 1.40–1.45 s at n = 2000, 11.17–11.25 s at n = 4000), because the
+dense kernel multiplies zeros like any other value. CSR end-to-end was faster than dense at every density
+up to 25 % for all three sizes, by 84–270× at 0.1 % and by 2.3–2.7× at 25 %. It was slower at 50 %
+(0.62–0.78×). The crossover therefore lies between 25 % and 50 %. With only these two points, its
+exact location is not determined.</p>
+<p><strong>Why the advantage shrinks.</strong> At 25 % density the SpGEMM performs d² = 6.25 % of the dense
+multiply-adds, yet it was only 2.3–2.9× faster than dense, not 16×. Table 5 shows why: each sparse
+multiply-add cost 1.0–1.2 ns, 5.6–6.9× more than a dense one (about 0.18 ns). The extra cost comes from
+the column-index load and the indirect, irregular update <code>acc[j] += ...</code> with its marker check, which the
+dense kernel does not need. At very low density the cost per operation was higher still (9–41 ns). In
+that regime the fixed per-row work, such as row-pointer reads, marker handling and sorting, dominates the
+few products. At 25 % the SpGEMM time grew 7.5× and 9.8× per doubling of n, close to the 8× of the dense
+kernel, so the speedup over dense stayed roughly constant with n at high density.</p>
+<p><strong>Fill-in and memory (H5).</strong> Supported. The measured output density matched 1 − (1 − d²)ⁿ closely at
+every point (Table 4, Figure 5). Fill-in depends strongly on n: at 1 % input density C was 9.5 % dense at
+n = 1000, 33 % at n = 4000 and 63 % at n = 10000. At n = 4000, 5 % input density already produced an
+essentially dense output (99.996 %). The memory advantage of CSR was therefore large only while C stayed
+sparse: at n = 4000 the SpGEMM process peaked at 5.0 MiB at 0.1 %, against 370.0 MiB for dense. Once C is
+dense, CSR stores it with 12 bytes per entry instead of 8, and at 50 % the inputs need 6 bytes per entry.
+The peak working set was then equal to dense (370.1 vs 370.0 MiB at n = 4000; 95.4 vs 95.3 MiB at
+n = 2000). At n = 10000, a dense C in CSR alone needs 1.1 GiB, and the process peaked at 1.35 GiB at 10 %.</p>
+<p><strong>Conversion cost.</strong> Converting A and B from dense scans all n² entries of each matrix, so its cost depends
+mainly on n (2.2, 11.7 and 39.8 ms at 0.1 %). At 0.1 % it was 23–240× longer than the SpGEMM itself
+and dominated the end-to-end time. CSR was still 84–270× faster than dense, so conversion did not move
+the crossover: the dense / end-to-end ratios at 25 % and 50 % (Table 4) differ from the dense / SpGEMM
+ratios by less than 10 %. Its memory cost is larger than its time cost, because the conversion process holds
+both dense inputs (248–431 MiB at n = 4000).</p>
+<p><strong>Density alone does not determine performance.</strong> The same density gave very different outcomes
+depending on n and on the output. At 1 % the CSR end-to-end speedup was 50× at n = 1000 and 91× at
+n = 4000. At 5 % the output was 92 % dense at n = 1000 but fully dense at n = 4000, which changed the
+memory picture from sparse to dense. At n = 10000 the CSR kernel exceeded the 60 s budget at 25 %,
+a density at which it was 2.3–2.9× faster than dense at smaller n. The cost per operation, fill-in and
+the absolute work d²n³ all matter, and these results hold only for uniformly random positions.</p>
+<h3>5.3 Limitations</h3>
+<ul>
+<li>All data come from one laptop. Run-to-run differences of up to 31 % were seen between runs
+  (Section 4.3), so only within-run comparisons are made. Frequency, temperature and power state were not recorded.</li>
+<li>No hardware performance counters were used: the cache explanations are consistent with the timings but
+  not proven, and the power-of-two effects are inferred from only a few sizes.</li>
+<li>Only one sparsity pattern was tested (uniform random positions). Structured matrices (banded,
+  block-diagonal, power-law degree distributions) have different fill-in and locality and may behave
+  very differently.</li>
+<li>Part B compared CSR with one dense method (blocked, T = 128). The density crossover is located only
+  between 25 % and 50 %.</li>
+<li>All code is sequential, and vectorisation was left to the compiler without inspection.</li>
+<li>The peak working set covers the whole process, including the loaded inputs. The 0.25 s polling used to
+  enforce the memory budget could miss a short spike. The reported peak itself is the operating system's counter.</li>
+<li>The cross-check against NumPy and SciPy used small sizes (n ≤ 200). Larger sizes rely on the unit tests
+  and on the agreement of the checksums printed for each repetition.</li>
+</ul>
+<h2>6. Conclusions</h2>
+<p>Within the tested scope (one Intel Core i7-12650H laptop, Windows 11, gcc 16.1.0 <code>-O2</code>, float64, one thread,
+dense n = 64–4096 and uniformly random sparse inputs with n = 1000–10000), the study establishes that:</p>
+<ol>
+<li>Loop reordering to i-k-j removes the column-stride penalty of the naive kernel. It was 8.9–11.8× faster
+   than i-j-k from n = 512 to 1536 and followed n³ while B fitted in the L3 cache.</li>
+<li>Cache blocking only helped once i-k-j had to stream B from beyond the L3 cache. It was then 1.3–2.2×
+   faster than i-k-j. Both optimisations raised the largest feasible size from 1536 (i-j-k) to 4096, the
+   largest size attempted.</li>
+<li>The best tile was T = 128, whose working set fits in L2 rather than L1d. The prediction that an
+   L1d-sized tile would be best was wrong for this micro-kernel.</li>
+<li>For uniformly random inputs, the own CSR SpGEMM, including conversion, was faster than the dense
+   blocked kernel up to 25 % density and slower at 50 % for n = 1000, 2000 and 4000, even though it does
+   d² of the dense work. Each sparse operation cost about 6× more than a dense one.</li>
+<li>Output fill-in follows 1 − (1 − d²)ⁿ and grows with n. Once C is dense, CSR loses its memory advantage
+   and its peak memory equals that of dense storage at 50 % density.</li>
+</ol>
+<p>The study does not establish the exact density of the crossover, the hardware cause of the
+tile-size and power-of-two effects, or how structured sparsity patterns behave. Finer density steps,
+hardware counters and structured test matrices would address these questions.</p>
+<h2>7. References</h2>
+<p>[1] Universidad de Las Palmas de Gran Canaria, "Individual Assignments — Matrix Multiplication," BIG DATA course, revised proposal 2026-2027.</p>
+<p>[2] Intel Corporation, "Intel Core i7-12650H Processor (24M Cache, up to 4.70 GHz) — Specifications," Intel ARK. [Online]. Available: https://www.intel.com/content/www/us/en/products/sku/226066/intel-core-i712650h-processor-24m-cache-up-to-4-70-ghz/specifications.html</p>
+<p>[3] J. L. Hennessy and D. A. Patterson, <em>Computer Architecture: A Quantitative Approach</em>, 6th ed. Cambridge, MA, USA: Morgan Kaufmann, 2017.</p>
+<p>[4] U. Drepper, "What Every Programmer Should Know About Memory," Red Hat, Inc., 2007.</p>
+<p>[5] M. S. Lam, E. E. Rothberg, and M. E. Wolf, "The cache performance and optimizations of blocked algorithms," in <em>Proc. 4th Int. Conf. Architectural Support for Programming Languages and Operating Systems (ASPLOS-IV)</em>, Santa Clara, CA, USA, 1991, pp. 63–74, doi: 10.1145/106972.106981.</p>
+<p>[6] K. Goto and R. A. van de Geijn, "Anatomy of high-performance matrix multiplication," <em>ACM Trans. Math. Softw.</em>, vol. 34, no. 3, Art. 12, 2008, doi: 10.1145/1356052.1356053.</p>
+<p>[7] Y. Saad, <em>Iterative Methods for Sparse Linear Systems</em>, 2nd ed. Philadelphia, PA, USA: SIAM, 2003, Sec. 3.4.</p>
+<p>[8] F. G. Gustavson, "Two fast algorithms for sparse matrices: Multiplication and permuted transposition," <em>ACM Trans. Math. Softw.</em>, vol. 4, no. 3, pp. 250–269, 1978, doi: 10.1145/355791.355796.</p>
+<p>[9] P. Virtanen <em>et al.</em>, "SciPy 1.0: Fundamental algorithms for scientific computing in Python," <em>Nature Methods</em>, vol. 17, no. 3, pp. 261–272, 2020, doi: 10.1038/s41592-019-0686-2.</p>
+<p>[10] C. R. Harris <em>et al.</em>, "Array programming with NumPy," <em>Nature</em>, vol. 585, no. 7825, pp. 357–362, 2020, doi: 10.1038/s41586-020-2649-2.</p>
+<p>[11] G. Rodola, "psutil documentation." [Online]. Available: https://psutil.readthedocs.io</p>
+<p>[12] Microsoft, "Acquiring high-resolution time stamps," Windows App Development documentation. [Online]. Available: https://learn.microsoft.com/en-us/windows/win32/sysinfo/acquiring-high-resolution-time-stamps</p>
+<p>[13] Microsoft, "GetSystemCpuSetInformation function (processthreadsapi.h)," Win32 API documentation. [Online]. Available: https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation</p>
+<p>[14] Microsoft, "GetLogicalProcessorInformationEx function (sysinfoapi.h)," Win32 API documentation. [Online]. Available: https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getlogicalprocessorinformationex. Values recorded in <code>tools/cache_info.json</code>.</p>
+<p>[15] Free Software Foundation, "GCC 12 Release Series: Changes, New Features, and Fixes." [Online]. Available: https://gcc.gnu.org/gcc-12/changes.html</p>
+<p>[16] J. López Guillén, "How matrix size affects the runtime and memory of naive matrix multiplication in Python, Java and C," BIG DATA Assignment 1 report, Universidad de Las Palmas de Gran Canaria, 2026. Repository tag <code>assignment-1</code>.</p>
+<h2>8. Reproducibility materials</h2>
+<p>All materials are in the repository above, in <code>assignment-2/</code>:</p>
+<ul>
+<li>Source code: <code>c/matmul.c</code> (dense kernels), <code>c/csr.c</code> (CSR, conversion, SpGEMM), <code>c/runner.c</code>; unit tests
+  <code>c/test_matmul.c</code> and <code>tests/</code>; harness <code>benchmark.py</code> and <code>bench_common.py</code>; cross-check <code>cross_check.py</code>.</li>
+<li>Inputs: <code>data/generate.py</code> (dense, from Assignment 1) and <code>data/generate_sparse.py</code>; seeds, formats and
+  definitions in <code>data/README.md</code>; generated sparse parameters in <code>data/sparse/manifest.json</code>.</li>
+<li>Configuration: <code>bench_config_tiles.json</code>, <code>bench_config_dense.json</code>, <code>bench_config_sparse.json</code>.</li>
+<li>Raw data and environment: <code>results/{tiles,dense,sparse}/raw_measurements.csv</code> and <code>environment.json</code>;
+  topology and caches in <code>tools/cpu_topology.json</code> and <code>tools/cache_info.json</code>.</li>
+<li>Analysis: <code>results/analyze.py</code> produces <code>summary.md</code>/<code>summary.csv</code>, <code>sparse_comparison.csv</code> and all figures.</li>
+<li>Report: <code>report/report.md</code>, rendered to PDF by <code>report/build_pdf.py</code>.</li>
+</ul>
+<p>Exact commands, from PowerShell inside <code>assignment-2/</code> (as in <code>assignment-2/README.md</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Command</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Setup</td>
+<td><code>py -3.13 -m venv .venv</code> then <code>.venv\Scripts\python -m pip install -r requirements.txt</code></td>
+</tr>
+<tr>
+<td>Build and test</td>
+<td><code>.venv\Scripts\python build.py</code> then <code>.venv\Scripts\python run_tests.py</code></td>
+</tr>
+<tr>
+<td>Tile sweep</td>
+<td><code>.venv\Scripts\python benchmark.py --config bench_config_tiles.json</code></td>
+</tr>
+<tr>
+<td>Dense methods</td>
+<td><code>.venv\Scripts\python benchmark.py --config bench_config_dense.json</code></td>
+</tr>
+<tr>
+<td>Sparse vs dense</td>
+<td><code>.venv\Scripts\python benchmark.py --config bench_config_sparse.json</code></td>
+</tr>
+<tr>
+<td>Tables and figures</td>
+<td><code>.venv\Scripts\python results\analyze.py</code></td>
+</tr>
+<tr>
+<td>Report PDF</td>
+<td><code>.venv\Scripts\python report\build_pdf.py</code></td>
+</tr>
+</tbody>
+</table>
+<h2>Generative AI disclosure</h2>
+<p>In this project, I used generative AI: Claude (Anthropic), through Claude Code. The AI proposed the experimental design (methods, sizes, densities, budgets and timing boundaries), which I reviewed and approved before any measurement was taken. Based on that design, I authorised it to implement the code (the optimised dense kernels, the CSR conversion and SpGEMM, the tests, the benchmark harness and the analysis scripts). At my request, it ran the tile sweep and the dense and sparse benchmarks on my laptop; I chose the tile size (T = 128) from the sweep results. The AI also helped me understand the code and the results, and drafted the text of this report from the stored measurements. I reviewed and edited the report and checked its figures against the raw data.</p>
+<p>I have a full understanding of both the code and the conclusions. All numerical results are derived from measurements stored in the repository; none were generated by the AI tool.</p></body></html>
