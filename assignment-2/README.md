@@ -31,7 +31,8 @@ Sequential (single-thread) C study of two questions:
 
 - Windows 11, Python 3.13 (`py` launcher), GCC from MSYS2 UCRT64
   (`C:\msys64\ucrt64\bin` on `PATH`).
-- Run every command from **PowerShell or cmd** inside `assignment-2/`. As in
+- Run every command from **PowerShell or cmd** inside `assignment-2/` (in the
+  materials zip this is the folder `Assignment02_LopezGuillen_Materials/`). As in
   Assignment 1, the MSYS2 `gcc` exits with status 1 and no diagnostics when it
   is launched from Git Bash.
 
@@ -82,7 +83,8 @@ the file before a fresh run. Recommended order:
 
 ```powershell
 # 1. Tile sweep, then set "blocked_tiles" in bench_config_dense.json and
-#    "dense_tile" in bench_config_sparse.json to the chosen tile (default 64).
+#    "dense_tile" in bench_config_sparse.json to the chosen tile (both are set
+#    to T = 128, chosen from the recorded sweep).
 .venv\Scripts\python benchmark.py --config bench_config_tiles.json
 .venv\Scripts\python results\analyze.py --input results\tiles\raw_measurements.csv
 
@@ -143,8 +145,8 @@ run on its own; the harness writes `environment.json` next to each CSV.
 - Tile sweep: T = 16, 32, 64, 128, 256 at n = 1024 and 2048. The three tiles
   touched by the micro-kernel occupy `3 * 8 * T^2` bytes, which equals the
   48 KiB L1d at T ~ 45 and the 1.25 MiB L2 at T ~ 234 (P-core caches from
-  `tools/cache_info.json`); `tile_sweep.png` marks both. The dense config uses
-  T = 64 until the sweep has been run and analysed.
+  `tools/cache_info.json`); `tile_sweep.png` marks both. T = 128 was the
+  fastest at both sizes, so the dense and sparse configs use T = 128.
 
 ### Part B: sparse matrices (own CSR code)
 

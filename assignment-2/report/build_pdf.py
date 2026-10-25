@@ -27,6 +27,7 @@ body { font-family: "Segoe UI", Arial, sans-serif; font-size: 10.5pt; line-heigh
 h1 { font-size: 17pt; margin: 0 0 8pt; line-height: 1.25; }
 h2 { font-size: 13pt; margin: 16pt 0 6pt; border-bottom: 1px solid #bbb; padding-bottom: 2pt; }
 h3 { font-size: 11pt; margin: 12pt 0 4pt; }
+h2, h3 { break-after: avoid; page-break-after: avoid; }
 p, li { text-align: justify; }
 table { border-collapse: collapse; margin: 6pt 0 10pt; font-size: 8.5pt; }
 tr { page-break-inside: avoid; }

@@ -1,8 +1,11 @@
 # Loop Reordering, Cache Blocking and CSR Storage: When Do They Speed Up Sequential Matrix Multiplication in C?
 
 **Author:** Joel López Guillén
+
 **Assignment:** 2 — Optimised Matrix Multiplication Approaches and Sparse Matrices
+
 **Course:** BIG DATA, Grado en Ciencia e Ingeniería de Datos, Universidad de Las Palmas de Gran Canaria, 2026-2027
+
 **Repository:** https://github.com/JoelLopezGuillen/big-data-matrix-multiplication
 
 ---
@@ -14,8 +17,9 @@ This study asks two questions about sequential float64 matrix multiplication in 
 on the naive i-j-k kernel validated in Assignment 1? Second, under which tested conditions does an own
 CSR implementation (dense-to-CSR conversion plus Gustavson SpGEMM) beat the dense blocked kernel on the
 same matrices? All kernels were validated against NumPy and SciPy and timed as one warm-up plus five
-repetitions (median and IQR), with a 60 s limit per kernel execution and a 4 GiB memory budget. Loop
-reordering alone gave 8.9–11.8× at n = 512–1536. Blocking with the best tile (T = 128, not the L1d-sized
+repetitions (median and IQR), with a 60 s limit per kernel execution and a 4 GiB memory budget.
+Reordering the loops (i-k-j instead of i-j-k) made the kernel between 8.9 and 11.8 times faster than the
+baseline for n = 512 to 1536. Blocking with the best tile (T = 128, not the L1d-sized
 tile we predicted) matched i-k-j while the data fitted in cache and was 1.3–2.2× faster from n = 1536.
 The largest feasible size was 1536 for i-j-k and 4096 (the largest attempted) for the optimised kernels.
 For uniformly random sparse inputs, CSR was faster than dense up to 25 % density and slower at 50 % for
@@ -438,7 +442,9 @@ the absolute work d²n³ all matter, and these results hold only for uniformly r
 - The peak working set covers the whole process, including the loaded inputs. The 0.25 s polling used to
   enforce the memory budget could miss a short spike. The reported peak itself is the operating system's counter.
 - The cross-check against NumPy and SciPy used small sizes (n ≤ 200). Larger sizes rely on the unit tests
-  and on the agreement of the checksums printed for each repetition.
+  and on the checksums printed for each repetition, which were bit-identical across all dense methods at
+  every size where they ran, as expected because all three accumulate each element of C in the same
+  increasing order of k.
 
 ## 6. Conclusions
 
@@ -446,15 +452,16 @@ Within the tested scope (one Intel Core i7-12650H laptop, Windows 11, gcc 16.1.0
 dense n = 64–4096 and uniformly random sparse inputs with n = 1000–10000), the study establishes that:
 
 1. Loop reordering to i-k-j removes the column-stride penalty of the naive kernel. It was 8.9–11.8× faster
-   than i-j-k from n = 512 to 1536 and followed n³ while B fitted in the L3 cache.
-2. Cache blocking only helped once i-k-j had to stream B from beyond the L3 cache. It was then 1.3–2.2×
-   faster than i-k-j. Both optimisations raised the largest feasible size from 1536 (i-j-k) to 4096, the
+   than i-j-k from n = 512 to 1536 and followed n³ up to n = 1024.
+2. Cache blocking only helped once B approached or exceeded the L3 cache (from n = 1536). It was then
+   1.3–2.2× faster than i-k-j. Both optimisations raised the largest feasible size from 1536 (i-j-k) to 4096, the
    largest size attempted.
 3. The best tile was T = 128, whose working set fits in L2 rather than L1d. The prediction that an
    L1d-sized tile would be best was wrong for this micro-kernel.
 4. For uniformly random inputs, the own CSR SpGEMM, including conversion, was faster than the dense
    blocked kernel up to 25 % density and slower at 50 % for n = 1000, 2000 and 4000, even though it does
-   d² of the dense work. Each sparse operation cost about 6× more than a dense one.
+   d² of the dense work. At 25–50 % density each sparse operation cost about 5–7× more than a dense one,
+   and at lower densities 8–230× more (Table 5).
 5. Output fill-in follows 1 − (1 − d²)ⁿ and grows with n. Once C is dense, CSR loses its memory advantage
    and its peak memory equals that of dense storage at 50 % density.
 
