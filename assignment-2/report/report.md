@@ -8,6 +8,8 @@
 
 **Repository:** https://github.com/JoelLopezGuillen/big-data-matrix-multiplication
 
+**Materials:** source code, raw measurements and analysis scripts at the repository tag `assignment-2` (https://github.com/JoelLopezGuillen/big-data-matrix-multiplication/tree/assignment-2)
+
 ---
 
 ## Abstract
